@@ -1,25 +1,20 @@
 ---
 
-image: docker:latest
-
 variables:
-  # When using dind, it's wise to use the overlayfs driver for
-  # improved performance:
-  DOCKER_DRIVER: overlay2
-  PROJECT_NAME: "{{ cookiecutter.project_name }}"
   GROUP_NAME: "{{ cookiecutter.organization }}"
+  PROJECT_NAME: "{{ cookiecutter.project_name }}"
   REGISTRY: "registry.gitlab.com"
-  PIPENV_SHELL_COMPAT: "true"
-  CONTAINER_RELEASE_IMAGE: "$REGISTRY/$GROUP_NAME/$PROJECT_NAME:latest"
+  IMAGE_FULL_NAME: "${REGISTRY}/${GROUP_NAME}/${PROJECT_NAME}"
 
-services:
-  - docker:dind
 
-before_script:
-  # Installing docker-compose:
+# Base scripts
+# ============
+
+.docker-before-script: &docker-before-script
+  # Installing global dependencies:
   - apk update && apk upgrade
-  - apk add python python-dev py-pip git build-base
-  - pip install dump-env docker-compose
+  - apk add python3 python3-dev py3-pip git build-base
+  - pip3 install dump-env docker-image-size-limit 'docker-compose<1.24'
   # Creating `.env` configuration file:
   - dump-env -t config/.env.template -p 'SECRET_' > config/.env
   # Login into Docker registry:
@@ -27,23 +22,75 @@ before_script:
   # Debug information:
   - docker info && docker-compose --version && git --version
 
-# Testing application:
+.base-docker:
+  services:
+    - docker:dind
+  variables:
+    # When using dind, it's wise to use the overlayfs driver for
+    # improved performance:
+    DOCKER_DRIVER: overlay2
+
+.docker:
+  extends: .base-docker
+  image: docker:latest
+  interruptible: true
+
+
+# Test scripts
+# ============
+
 test:
   stage: test
+  extends: .docker
+  before_script:
+    - *docker-before-script
   script:
-    - docker-compose -f docker-compose.yml -f docker/docker-compose.prod.yml config --quiet
-    - docker-compose run -e INSIDE_CI=1 web sh ./docker/ci.sh
-  coverage: '/\d+\%\s*$/'
-  artifacts:
-    paths:
-      - artifacts/
+    # Checking config:
+    - docker-compose -f docker-compose.yml
+      -f docker/docker-compose.prod.yml config --quiet
 
-# Releasing image, when tests pass:
+    # Pulling cache:
+    - docker pull "${IMAGE_FULL_NAME}:dev" || true
+    - docker tag "${IMAGE_FULL_NAME}:dev" "${PROJECT_NAME}:dev" || true
+
+    # The logic itself:
+    - docker-compose build
+    - docker-compose run --rm web sh ./docker/ci.sh
+    - disl "${PROJECT_NAME}:dev" 700MiB
+
+    # Pushing back the result for future runs:
+    - docker tag "${PROJECT_NAME}:dev" "${IMAGE_FULL_NAME}:dev"
+    - docker push "${IMAGE_FULL_NAME}:dev"
+  only:
+    - merge_requests
+
+
+# Release scripts
+# ===============
+
+# Releasing image, when in `master` branch,
+# can be replaced with `kira-release` bot:
+# https://github.com/wemake-services/kira-release
 release-image:
+  extends: .docker
   stage: deploy
+  allow_failure: false
+  before_script:
+    # Build local image to be released to gitlab registry,
+    # modify it to suite your needs as you wish.
+    # We only care about the name of the image:
+    - *docker-before-script
+
+    # Now we need the latest images for cache and improved build times:
+    - docker pull "${IMAGE_FULL_NAME}:latest" || true
+    - docker pull "${IMAGE_FULL_NAME}:dev" || true
+
+    # Building the image itself:
+    - docker-compose -f docker-compose.yml
+      -f docker/docker-compose.prod.yml build
+
   script:
-    - docker build -t "$CONTAINER_RELEASE_IMAGE" --build-arg DJANGO_ENV=production -f docker/django/Dockerfile .
-    - docker push "$CONTAINER_RELEASE_IMAGE"
+    - docker push "${IMAGE_FULL_NAME}:latest"
   only:
     - master
   environment:

@@ -212,6 +212,8 @@ fabric.properties
 #####=== Custom ===#####
 # Directories:
 media/
+.static/
+/static/
 
 # File types:
 *.sqlite3
@@ -236,3 +238,9 @@ artifacts/
 
 # mypy:
 .mypy_cache/
+
+# pytest:
+.pytest_cache/
+
+# ipython:
+.ipython/

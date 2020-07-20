@@ -1,10 +1,9 @@
-# -*- coding: utf-8 -*-
 
 import re
 import sys
 from urllib.parse import urlparse
 
-MODULE_REGEX = r'^[a-z][_a-z0-9]+$'
+MODULE_REGEX = r'^[a-z][a-z0-9_]+[a-z0-9]$'
 MODULE_NAME = '{{ cookiecutter.project_name }}'
 
 DOMAIN_NAME = '{{ cookiecutter.project_domain }}'
@@ -21,12 +20,12 @@ def validate_project_name():
     """
     if not re.match(MODULE_REGEX, MODULE_NAME):
         # Validates project's module name:
-        message = (
-            'ERROR: The project slug {0} is not a valid Python module name. '
-            'Start with a lowercase letter. '
-            'Followed by any lowercase letters, numbers or underscores.'
-        )
-        raise ValueError(message.format(MODULE_NAME))
+        message = [
+            'ERROR: The project slug {0} is not a valid Python module name.',
+            'Start with a lowercase letter.',
+            'Followed by any lowercase letters, numbers or underscores.',
+        ]
+        raise ValueError(' '.join(message).format(MODULE_NAME))
 
 
 def validate_domain():
@@ -36,39 +35,44 @@ def validate_domain():
     What is considered valid:
     1. myapp.com
     2. google.co.uk
+    3. wemake.services
 
     What is considered invalid:
     1. https://wemake.services
     2. http://mysite.ru/hello
     3. http://myshop.com?query=django
+
     """
-    result = urlparse(DOMAIN_NAME)
-    if not result.path:
+    parsed_url = urlparse(DOMAIN_NAME)
+    if not parsed_url.path:
         # When entering just a domain everything inside goes to `path`.
         # So, it should be set. If not, that's an error.
         raise ValueError(
-            'ERROR: `project_domain` is invalid. '
-            'Try to drop the `http(s)://` part.',
+            'ERROR: `project_domain` is invalid. Remove `http(s)://` part.',
         )
 
     parts = [
-        result.scheme,
-        result.netloc,
-        result.params,
-        result.query,
-        result.fragment,
+        parsed_url.scheme,
+        parsed_url.netloc,
+        parsed_url.params,
+        parsed_url.query,
+        parsed_url.fragment,
     ]
 
     if any(bool(part) for part in parts):
         raise ValueError(
-            'ERROR: `project_domain` should be a domain name only. '
-            'Without params, query or any other url parts.',
+            'ERROR: `project_domain` should be a domain name only. ',
         )
 
 
-try:
-    validate_project_name()
-    validate_domain()
-except ValueError as e:
-    print(e)
-    sys.exit(1)
+validators = (
+    validate_project_name,
+    validate_domain,
+)
+
+for validator in validators:
+    try:
+        validator()
+    except ValueError as ex:
+        print(ex)  # noqa: WPS421
+        sys.exit(1)

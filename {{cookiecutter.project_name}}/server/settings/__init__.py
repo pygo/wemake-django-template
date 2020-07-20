@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 """
 This is a django-split-settings main file.
@@ -12,8 +11,7 @@ To change settings file:
 
 from os import environ
 
-from split_settings.tools import optional, include
-
+from split_settings.tools import include, optional
 
 # Managing environment via DJANGO_ENV variable:
 environ.setdefault('DJANGO_ENV', 'development')

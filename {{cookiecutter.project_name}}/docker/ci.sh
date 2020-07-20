@@ -4,8 +4,6 @@ set -o errexit
 set -o nounset
 
 # Initializing global variables and functions:
-
-: "${INSIDE_CI:=0}"
 : "${DJANGO_ENV:=development}"
 
 # Fail CI if `DJANGO_ENV` is not set to `development`:
@@ -14,56 +12,78 @@ if [ "$DJANGO_ENV" != 'development' ]; then
   exit 1
 fi
 
+# Python path is required for `mypy` to be run correcty with `django-stubs`:
+: "${PYTHONPATH:=''}"
+
 pyclean () {
   # Cleaning cache:
-  find . | grep -E '(__pycache__|\.py[cod]$)' | xargs rm -rf
+  find . \
+  | grep -E '(__pycache__|\.perm|\.cache|\.static|\.py[cod]$)' \
+  | xargs rm -rf
 }
 
 run_ci () {
+  echo '[ci started]'
+  set -x  # we want to print commands during the CI process.
+
+  # Testing filesystem and permissions:
+  touch .perm && rm -f .perm
+
+  # Running linting for all python files in the project:
+  flake8 .
+
+  # Running type checking, see https://github.com/typeddjango/django-stubs
+  mypy server tests/**/*.py
+
   # Running tests:
-  mypy server tests
+  pytest --dead-fixtures --dup-fixtures
   pytest
 
   # Run checks to be sure settings are correct (production flag is required):
-  DJANGO_ENV=production python /code/manage.py check \
-    --deploy --fail-level WARNING
+  DJANGO_ENV=production python manage.py check --deploy --fail-level WARNING
+
+  # Check that staticfiles app is working fine:
+  DJANGO_ENV=production DJANGO_COLLECTSTATIC_DRYRUN=1 \
+    python manage.py collectstatic --no-input --dry-run
 
   # Check that all migrations worked fine:
-  python /code/manage.py makemigrations --dry-run --check
+  python manage.py makemigrations --dry-run --check
 
-  # Running code-quality check:
-  xenon --max-absolute A --max-modules A --max-average A server
+  # Check that all migrations are backwards compatible:
+  python manage.py lintmigrations --exclude-apps=axes --warnings-as-errors
+
+  # Checking if all the dependencies are secure and do not have any
+  # known vulnerabilities:
+  # Ignoring sphinx@2 security issue for now, see:
+  # https://github.com/miyakogi/m2r/issues/51
+  safety check --full-report -i 38330
+
+  # Checking `pyproject.toml` file contents:
+  poetry check
+
+  # Checking dependencies status:
+  pip check
 
   # Checking docs:
   doc8 -q docs
 
-  # Checking if all the dependencies are secure and do not have any
-  # known vulnerabilities:
-  # TODO(@sobolevn): uncomment when #287 will be fixed
-  # pipenv check
+  # Checking `yaml` files:
+  yamllint -d '{"extends": "default", "ignore": ".venv"}' -s .
 
-  # Run this part only if truly inside the CI process:
-  if [ "$INSIDE_CI" = 1 ]; then
-    # Generating reports as build artifacts, it will be possible
-    # to browse them later:
-    # https://docs.gitlab.com/ce/user/project/pipelines/job_artifacts.html
-    mkdir -p 'artifacts'
+  # Checking `.env` files:
+  dotenv-linter config/.env config/.env.template
 
-    # Generating pylint report (it will have issues!):
-    # https://pylint.readthedocs.io/en/latest/
-    PYLINT=$(pylint 'server' 'tests' || true)
-    echo "$PYLINT" > 'artifacts/pylint.rst'
+  # Checking translation files, ignoring ordering and locations:
+  polint -i location,unsorted locale
 
-    # Generating code-quality report:
-    # http://radon.readthedocs.io/en/latest/commandline.html
-    radon mi . > 'artifacts/mi.txt'
-
-    # Generating complexity report:
-    radon cc . -s --show-closures --total-average > 'artifacts/cc.txt'
-
-    # Generating raw metrics:
-    radon raw . > 'artifacts/raw.txt'
+  # Also checking translation files for syntax errors:
+  if find locale -name '*.po' -print0 | grep -q "."; then
+    # Only executes when there is at least one `.po` file:
+    dennis-cmd lint --errorsonly locale
   fi
+
+  set +x
+  echo '[ci finished]'
 }
 
 # Remove any cache before the script:
